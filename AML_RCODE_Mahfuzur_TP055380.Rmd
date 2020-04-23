@@ -1,0 +1,877 @@
+---
+title: "Auto Loan Default Prediction using ML"
+author: "Mahfuzur"
+date: "3/11/2020"
+output: word_document
+---
+Loading the libraries into R script.
+```{r setup, include=FALSE}
+library(readr)
+library(ggplot2)
+library(caret)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(DataExplorer)
+library(eeptools)
+library(ggcorrplot)
+library(e1071)
+library(kernlab)
+library(MLmetrics)
+```
+Read file from local folder using read.csv and name it as "data". R automatiocally recognise the first row as header.
+```{r}
+data_original <- as.data.frame(read_csv("~/train4.csv" ))
+#data_original <- read.csv(file.choose(), header = T)
+#glimpse(data_original)
+```
+Drop ID
+
+```{r}
+#Drop ID
+data_original$UNIQUEID <- NULL
+
+```
+## Descriptive statistics of the dataset
+Summary of the dataset
+```{r}
+#data_original <- subset(data_original, !is.na(data_original$DISBURSED_AMOUNT))
+#unique(data_original$EMPLOYMENT_TYPE)
+summary(data_original)
+
+```
+Dim() shows the dimension of the datset and str() used to display the internal structure of the dataset. 
+```{r, echo=FALSE}
+dim(data_original)
+str(data_original)
+```
+It can be seen from the data types that R was able to identified the numerical and character values well from the original file except a few variables. It has recognised DATE_OF_BIRTH and DISBURSAL_DATE as char instead of date. The issue has been corrected using as.Date() function.
+```{r}
+data_original$DATE_OF_BIRTH <-  as.Date(data_original$DATE_OF_BIRTH, format = "%d-%m-%Y")
+data_original$DISBURSAL_DATE <-  as.Date(data_original$DISBURSAL_DATE, format = "%d-%m-%Y")
+```
+Following variables contains categorical binary classes- AADHAR_FLAG, PAN_FLAG, VOTERID_FLAG, DRIVING_FLAG, PASSPORT_FLAG, AADHAR_FLAG, EMPLOYMENT_TYPE. But R has recognised them as char/num. This has been converted to factors using as.factor() function.
+```{r}
+data_original$PAN_FLAG <- as.factor(data_original$PAN_FLAG)
+data_original$VOTERID_FLAG <- as.factor(data_original$VOTERID_FLAG)
+data_original$DRIVING_FLAG <- as.factor(data_original$DRIVING_FLAG)
+data_original$PASSPORT_FLAG <- as.factor(data_original$PASSPORT_FLAG)
+data_original$AADHAR_FLAG <- as.factor(data_original$AADHAR_FLAG)
+data_original$EMPLOYMENT_TYPE <- as.factor (data_original$EMPLOYMENT_TYPE)
+#data_original$LOAN_DEFAULT <- as.factor(data_original$LOAN_DEFAULT)
+```
+Age of the each customer can be calulated from their date of birth. Age being an integer, it is easier for medo buiding. Similarly how old the loan is can be calculated from DISBURSAL_DATE using age_calc function. 
+
+Caculating age and how long ago the loan was taken  from DATE_OF_BIRTH and DISBURSAL_DATE
+```{r}
+data_original$AGE <- age_calc(data_original$DATE_OF_BIRTH, units = "years")
+data_original$DATE_OF_BIRTH <- NULL
+data_original$LOAN_AGE <- age_calc(data_original$DISBURSAL_DATE, units = "years")
+data_original$DISBURSAL_DATE <- NULL
+```
+Many modeling technique requires all values to be nummeric. Therefore categorical values has to be relllbed with numeric values.Relebelling the values in PERFORM_CNS_SCORE_DESCRIPTION.It also reduce many different categories to 5 categories only. 
+```{r}
+data_original$PERFORM_CNS_SCORE_DESCRIPTION <- (revalue(data_original$PERFORM_CNS_SCORE_DESCRIPTION, c(
+                                                     "E-Low Risk" = 1,                                                                                                                                       "F-Low Risk"= 1,
+                                                     "No Bureau History Available" = 0 , 
+                                                     "H-Medium Risk" = 2, "A-Very Low Risk" = 1,
+                                                     "Not Scored: Only a Guarantor"= 0,  
+                                                     "K-High Risk" = 3, "D-Very Low Risk" = 1, 
+                                                     "Not Scored: No Activity seen on the customer (Inactive)"=0, 
+                                                     "C-Very Low Risk"= 1, "M-Very High Risk" = 4, 
+                                                     "L-Very High Risk" = 4, "G-Low Risk" =1, "J-High Risk"= 4,                                                                                                                "B-Very Low Risk" = 1,          
+                                                     "Not Scored: No Updates available in last 36 months"= 0,   
+                                                     "I-Medium Risk" = 2,                                       
+                                                     "Not Scored: Sufficient History Not Available" = 0,          
+                                                     "Not Scored: Not Enough Info available on the customer" = 0 
+                                                     )))
+unique(data_original$PERFORM_CNS_SCORE_DESCRIPTION)
+
+#Renaming this variable
+colnames(data_original)[18] <- "CNS_GROUP"
+```
+AVERAGE_ACCT_AGE and CREDIT_HISTORY_LENGTH features contain alpha numeric values. An example value from these features is "1yrs 3mon". This is not helpful in model building. These values are initially seperated in to years and months. Years and months value extracted then converted in to year.
+```{r}
+# Extracting the Account age information in years
+data_original <- separate(data_original, AVERAGE_ACCT_AGE, into= c("Acct_age_Year", "Acct_age_Month")) #Seperating month and year
+data_original$Acct_age_Year <- as.numeric(gsub("([0-9]+).*$", "\\1", data_original$Acct_age_Year)) #extracting year value
+data_original$Acct_age_Month <- as.numeric(gsub("([0-9]+).*$", "\\1", data_original$Acct_age_Month)) # extracting month value
+
+#converting months to year and storing them in original column
+data_original$AVERAGE_ACCT_AGE <- data_original$Acct_age_Year + data_original$Acct_age_Month/12 
+data_original$Acct_age_Year <- NULL #Dropping the feature
+data_original$Acct_age_Month <- NULL #Dropping the feature
+
+# Extracting the credit history information in years
+data_original <- separate(data_original, CREDIT_HISTORY_LENGTH, into= c("History_len_Year", "History_len_Month"))
+data_original$History_len_Year <- as.numeric(gsub("([0-9]+).*$", "\\1", data_original$History_len_Year))
+data_original$History_len_Month <- as.numeric(gsub("([0-9]+).*$", "\\1", data_original$History_len_Month))
+
+#converting months to year and storing them in original column
+data_original$CREDIT_HISTORY_LENGTH <- data_original$History_len_Year + data_original$History_len_Month/12
+
+#Dropping the temporary features form the dataset
+data_original$History_len_Year <- NULL
+data_original$History_len_Month <- NULL
+```
+View data summary after transforming AVERAGE_ACCT_AGE and CREDIT_HISTORY_LENGTH
+```{r}
+summary(data_original)
+```
+Drop variable UNIQUEID, BRANCH_ID, SUPPLIER_ID, MANUFACTURER_ID, CURRENT_PINCODE_ID, EMPLOYEE_CODE_ID, DISBURSALDATE from the dataset as these variables does not have any influence in the target variable and not necessary. Also MOBILENO_AVL_FLAG contains only one value thoughout. Therefore it does not offer any variance for modeling. After exracting the year DATE of Birth Can be removed too.
+```{r}
+data_original <- subset(data_original, select = -c(BRANCH_ID,STATE_ID, SUPPLIER_ID, MANUFACTURER_ID, CURRENT_PINCODE_ID,                                                            EMPLOYEE_CODE_ID, MOBILENO_AVL_FLAG ))
+```
+Indentifying missing values in the variables
+```{r}
+sum(is.na(data_original))
+colSums(is.na(data_original))
+```
+Impute missing values in DISBURSED_AMOUNT and EMPLOYMENT_TYPE using MICE(Multivariate imputation by chained equations)imputation. MICE has various methods available for missing value imputation. Missing values in DISBURSED_AMOUNT imputed using PMM(Predictive Mean Matching) methods and EMPLOYMENT_TYPE imputed using LOGREG(Logistic Regression). Imputed dataset are saved as COMPLETE_DATA. After imputation done COMPLETE_DATA shows not missing values.
+```{r}
+library(mice)
+library(VIM)
+#md.pattern(data_original)
+initial <- mice(data_original, maxit=0)
+
+initial$method[c("DISBURSED_AMOUNT")] = "cart"
+initial$method[c("EMPLOYMENT_TYPE")] = "logreg"
+
+meth <- initial$method
+#Imputing missing values using MICE imputation method
+temp <- mice(data_original, method= meth, m=2, seed=10)
+complete_data <- complete(temp)
+#to check imputed data for each observation in DISBURSED_AMOUNT
+temp$imp$DISBURSED_AMOUNT
+#to check imputed data for each observation in DISBURSED_AMOUNT
+temp$imp$EMPLOYMENT_TYPE
+# to check for missing value in the dataset after imputation
+sum(is.na(complete_data))
+# Alternatively missing value can be imputed by the mean/mode value of the varable
+#data_original$DISBURSED_AMOUNT[is.na(data_original$DISBURSED_AMOUNT)] <- mean(data_original$DISBURSED_AMOUNT, na.rm = TRUE)
+```
+Methods that are used to impute in each variable
+```{r}
+temp$method
+```
+View data summary after imputation
+```{r}
+summary(complete_data)
+```
+Split the dataset based on numeriacal and categorical features. DATA_NUM contains only numerical features and DATA_CHAR contains only categorical features. Both dataset contains common feature LOAN_DEFAULT as this is the target feature and correlation with other features has to be established with response variable. It will also help to do exploratory data analysis with visualisation.
+```{r}
+#dataset containing continuos variables plus LOAN_DEFAULT
+data_num <- subset(complete_data, select = -c(EMPLOYMENT_TYPE, CNS_GROUP, AADHAR_FLAG, 
+                                              PAN_FLAG, VOTERID_FLAG, DRIVING_FLAG, 
+                                              PASSPORT_FLAG, DELINQUENT_ACCTS_IN_LAST_SIX_MONTHS))
+#dataset containing numeric variables
+data_char <- subset(complete_data, select = c(EMPLOYMENT_TYPE, CNS_GROUP, AADHAR_FLAG, 
+                                              PAN_FLAG, DELINQUENT_ACCTS_IN_LAST_SIX_MONTHS,
+                                              VOTERID_FLAG,DRIVING_FLAG, PASSPORT_FLAG, LOAN_DEFAULT))
+```
+Correlation Matrix has been generated for both DATA_CHAR and DATA_NUM dataset. This matrix will help identify multicolinearity among predictor variable as well as correlation with the response variable.
+```{r}
+#correlation matrix of all categorical variables
+plot_correlation(data_char,type = c( "all"))
+```
+
+```{r}
+#correlation matrix of all numerical variables
+cormap<- cor(data_num)
+ggcorrplot(cormap,
+           outline.col = "white",
+           ggtheme = ggplot2::theme_gray,
+           lab = TRUE, lab_size = 3.5
+          )
+
+```
+Correlation matrix shows some variables are highly correlated with one another. Colinerity makes two variables redundant to one another. So we can drop one between them. 
+
+correlation between SEC__DISBURSED_AMOUNT and  SEC_SANCTIONED_AMOUNT is 1
+correlation between SEC_CURRENT_BALANCE and SEC_SANCTIONED_AMOUNT is 0.93
+correlation between  SEC_SANCTIONED_AMOUNT and SEC__DISBURSED_AMOUNT is 1
+correlation between SEC_ACTIVE_ACCTS and SEC_NO_OF_ACCTS  is 0.83
+correlation between PRI__DISBURSED_AMOUNT and  PRI_SANCTINED_AMOUNT is 1
+correlation between PRI_ACTIVE_ACCTS and PRI_NO_OF_ACCTS is 0.75
+correlation between PRI_ACTIVE_ACCTS and NEW_ACCTS_IN_LAST_SIX_MONTHS  is 0.7
+
+DRIVING_FLAG, PASSPORT_FLAG, PAN_FLAG has very low correlation with target variable. SEC_OVERDUE_ACCTS and SEC_INSTAL_AMT has ZERO correlation with target variable. Hence does not contribute in model building. These variables are removed from COMPLETE_DATA dataset and saved as DATA. 
+
+```{r}
+data<- subset(complete_data, select = -c(SEC_DISBURSED_AMOUNT, SEC_SANCTIONED_AMOUNT, SEC_NO_OF_ACCTS, PRI_DISBURSED_AMOUNT, PRI_SANCTIONED_AMOUNT, PRI_NO_OF_ACCTS, SEC_OVERDUE_ACCTS, SEC_INSTAL_AMT, DRIVING_FLAG, PASSPORT_FLAG, PAN_FLAG))
+```
+boxplot has been generated using numerical variables in the DATA_NUM dataset. Boxplot of each variable is plotted against target variable LOAN_DEFAULT. 
+```{r}
+plot_boxplot(data_num, by = "LOAN_DEFAULT",
+             geom_boxplot_args = list("outlier.color" = "red"))
+```
+Boxplot shows ther are possible outliers in the dataset. Interquartile range has been calculated using IQR() function. Mandić-Rajčević & Colosio(2019) suggested better results can be acheived by removing extreme outliers 2.5 times of the Interquartile Range rather than pupolar 1.5 times. Some outliers may be good for the model building.So removing all outliers might not be a good idea. Only extreme outliers has been removed.
+```{r}
+# Calculating interquartile range to Detect outliers
+Q <- quantile(data$PRI_CURRENT_BALANCE, probs=c(.25, .75), na.rm = FALSE)
+iqr <- IQR(data$PRI_CURRENT_BALANCE)
+#removing outliers 2.5 times of the IQR
+data <- subset(data, data$PRI_CURRENT_BALANCE > (Q[1] - 2.5*iqr) & data$PRI_CURRENT_BALANCE < (Q[2]+2.5*iqr))
+
+
+Q <- quantile(data$DISBURSED_AMOUNT, probs=c(.25, .75), na.rm = FALSE)
+iqr <- IQR(data$DISBURSED_AMOUNT)
+data <- subset(data, data$DISBURSED_AMOUNT > (Q[1] - 2.5*iqr) & data$DISBURSED_AMOUNT < (Q[2]+2.5*iqr))
+
+Q <- quantile(data$LTV, probs=c(.25, .75), na.rm = FALSE)
+iqr <- IQR(data$LTV)
+data<- subset(data, data$LTV > (Q[1] - 2.5*iqr) & data$LTV < (Q[2]+2.5*iqr))
+
+
+Q <- quantile(data$CREDIT_HISTORY_LENGTH, probs=c(.25, .75), na.rm = FALSE)
+iqr <- IQR(data$CREDIT_HISTORY_LENGTH)
+data<- subset(data, data$CREDIT_HISTORY_LENGTH > (Q[1] - 1.5*iqr) & data$CREDIT_HISTORY_LENGTH < (Q[2]+1.5*iqr))
+```
+Histogram of continuos variable. 
+```{r}
+plot_histogram(data_num, ncol = 3L)
+```
+Density plot is a smoothed histogram. 
+
+```{r}
+plot_density(data_num, ncol= 3L)
+```
+
+Min-Max normalization of the dataset "DATA" and saving the result as "Normalised". feature scaling/normalisation is a must for some modelling techniques.
+```{r}
+#str(data)
+
+# calculate the pre-process parameters from the dataset
+preprocessParams <- preProcess(data, method=c("range"))
+# summarize transform parameters
+print(preprocessParams)
+# transform the dataset using the parameters
+Normalised <- predict(preprocessParams, data)
+# summarize the transformed dataset 
+summary(Normalised)
+```
+
+Creating dummy variables using one hot coding for all categorical values except LOAN_DEFAULT. dmyVars() automatically ignors any variable that is a factor.
+```{r}
+#creating coding parameters and saving it as "dmy"
+dmy <- dummyVars(" ~ .", Normalised)
+#Applying "dmy" parameters on "Normalised" dataset
+data <- data.frame(predict(dmy, newdata = Normalised))
+data$LOAN_DEFAULT <- as.factor(data$LOAN_DEFAULT)
+# Relabelling the class in target variable
+levels(data$LOAN_DEFAULT) <- make.names(levels(factor(data$LOAN_DEFAULT)))
+#levels(dataTest$LOAN_DEFAULT) <- make.names(levels(factor(dataTest$LOAN_DEFAULT)))
+str(data)
+```
+After the preprocessing the dataset has 106562 observation left. This huge dataset will require significant computational power. To simplify the model building process a random sample of 10,000 instances selected from the DATA dataset and saved as DATA_RANDOM.
+
+```{r}
+data_random <- sample_n(data,10000)
+```
+Ramdomly selected Dataset has been splited into Train and test dataset using catools. Stratified sampliling tecqnique has been used to maintain the proportion of class same as LOAN_DEFAULT variable. 
+```{r}
+library(caTools)
+set.seed(246)
+split <- sample.split(data_random$LOAN_DEFAULT, SplitRatio = 0.7)
+#split
+# Create training and testing sets
+dataTrain <- subset(data_random, split == TRUE)
+dataTest <- subset(data_random, split == FALSE) 
+```
+Compare properties of the dependent variable in various dataset derived in different stages of preprocessing.
+
+```{r}
+prop.table(table(data_original$LOAN_DEFAULT))
+#Class proportion in the preprocessed dataset
+prop.table(table(data$LOAN_DEFAULT))
+#Class proportion in the randomly selected dataset
+prop.table(table(data_random$LOAN_DEFAULT))
+
+# Class proportion in the Train and Test dataset
+prop.table(table(dataTrain$LOAN_DEFAULT))
+prop.table(table(dataTest$LOAN_DEFAULT))
+```
+Predictive modeling using Decision Trees techniques in RPART
+
+```{r}
+library(rpart)
+library(rpart.plot)
+fit.rpart <- rpart(LOAN_DEFAULT~., data = dataTrain, method = 'class')
+rpart.plot(fit.rpart, extra = "auto")
+```
+
+```{r}
+summary(fit.rpart)
+```
+Applying the model on test dataset
+```{r}
+predict_rpart <-predict(fit.rpart, dataTest, type = 'class')
+cm_rpart <- confusionMatrix(predict_rpart, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_rpart
+```
+
+MODELING with Random Forest
+```{r}
+library(randomForest)
+model_rf<-randomForest(LOAN_DEFAULT ~ ., data = dataTrain)
+plot(model_rf)
+```
+
+Now testing this model with test dataset
+```{r}
+pred_rf <-predict(model_rf,dataTest)
+cm_rf <- confusionMatrix(pred_rf, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_rf
+```
+Finding the ROC
+```{r}
+library(ROCR)
+library(pROC)
+preds <- predict(model_rf, dataTest, type = "prob")
+pred <- prediction(preds[,2], dataTest$LOAN_DEFAULT)
+eval <- performance(pred, "acc")
+plot(eval)
+abline (h=0.835, v= 0.6)
+```
+Following codes are used to find best threshold and accuracy.
+
+```{r}
+#identify Best Values
+max <- which.max(slot(eval, "y.values")[[1]])
+acc <- slot(eval,"y.values")[[1]][max]
+cut <- slot(eval,"x.values")[[1]][max]
+print(c(Accuracy = acc, Cutoff = cut))
+```
+
+```{r}
+#Receiver Operating Characteristics (ROC) Curve
+Roc <- performance(pred, "tpr", "fpr")
+plot(Roc, colorize= T, main= "ROC Curve")
+abline(a=0, b=1)
+
+```
+This dataset in various classification algorithm
+
+Prepare training scheme for other various modelling technique
+```{r}
+control <- trainControl(method="repeatedcv", number=5, repeats=2)
+```
+
+```{r}
+# CART
+set.seed(7)
+fit.cart <- train(LOAN_DEFAULT~., data=dataTrain, method="rpart", trControl=control)
+```
+
+
+```{r}
+# LDA
+set.seed(7)
+fit.lda <- train(LOAN_DEFAULT~., data=dataTrain, method="lda", trControl=control)
+```
+
+
+```{r}
+# SVM
+set.seed(7)
+fit.svm <- train(LOAN_DEFAULT~., data=dataTrain, method="svmRadial", trControl=control)
+```
+
+
+```{r}
+# kNN
+set.seed(7)
+fit.knn <- train(LOAN_DEFAULT~., data=dataTrain, method="knn", trControl=control)
+```
+
+
+```{r}
+# Random Forest
+set.seed(7)
+fit.rf <- train(LOAN_DEFAULT~., data=dataTrain, method="rf", trControl=control)
+```
+
+```{r}
+# XGBTree
+set.seed(7)
+fit.xgbtree <- train(LOAN_DEFAULT ~., data = dataTrain, method = "xgbTree", trControl = control)
+```
+
+```{r}
+#install.packages("gmodels")
+library(class)
+#CrossTable(svm_linear,svm_Linear_Grid, kernfit)
+
+# collect resamples
+results <- resamples(list( CART=fit.cart, LDA=fit.lda, SVM=fit.svm, KNN=fit.knn, RF=fit.rf, XGBTree= fit.xgbtree ))
+
+# summarize differences between models
+summary(results)
+```
+Dot plots of accuracy of various algorithm
+```{r}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+dotplot(results, scales=scales)
+```
+Having too many features some times complicates the model as not all features have equal predicting power. Reducing features to significant few may improve the model performance and reduce the runtime. Among various feature reduction methods PCA is a very popular methods of feature reduction.
+
+Principal Components Analysis(PCA) for feature reduction has been applied on "Normalised" dataset. The output saved as "tranformed".
+```{r}
+preprocessParams <- preProcess(data, method=c("center", "scale", "pca"))
+# summarize transform parameters
+print(preprocessParams)
+# transform the dataset using the parameters
+transformed <- predict(preprocessParams, data)
+# summarize the transformed dataset
+summary(transformed)
+#plot_density(transformed)
+```
+"Transformed" has reduced to 19 features from original 29 features, That is a significant reduction in number of features. A dataset of 10000 obsersevation has been selected from "transformed" dataset using statified sampling method. This method maintain the class proportion as the population dataset.
+
+```{r}
+#stratified sampling using catools
+#transformed$LOAN_DEFAULT <- transformed$`data_num[, 24]`
+library(caTools)
+set.seed(123)
+split <- sample.split(transformed$LOAN_DEFAULT, SplitRatio = 1/10)
+data_sample <- subset(transformed,split== TRUE )
+prop.table(table(data_sample$LOAN_DEFAULT))
+
+#str(data_sample)
+```
+
+The sample dataset "data_sample" has been splited again to train and test dataset for model building and evaluation purpose.
+```{r}
+library(caTools)
+set.seed(246)
+split <- sample.split(data_sample$LOAN_DEFAULT, SplitRatio = 0.7)
+#split
+# Create training and testing sets
+dataTrain_pca <- subset(data_sample, split == TRUE)
+dataTest_pca <- subset(data_sample, split == FALSE) 
+```
+Splited train dataset "dataTrain_pca" has been used to build a model using Random Forest Modelling technique.
+```{r}
+library(randomForest)
+model_rf.pca<-randomForest(LOAN_DEFAULT ~ ., data= dataTrain_pca)
+pred_rf.pca <- predict(model_rf.pca, dataTest_pca)
+cm_rf.pca <- confusionMatrix(pred_rf.pca, dataTest_pca$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_rf.pca
+```
+This dataset in various classification algorithm
+
+Prepare training scheme for other various modelling technique
+```{r}
+control <- trainControl(method="repeatedcv", number=5, repeats=2)
+```
+
+```{r}
+# CART
+set.seed(7)
+fit.cart.pca <- train(LOAN_DEFAULT~., data=dataTrain_pca, method="rpart", trControl=control)
+```
+
+
+```{r}
+# LDA
+set.seed(7)
+fit.lda.pca <- train(LOAN_DEFAULT~., data=dataTrain_pca, method="lda", trControl=control)
+```
+
+
+```{r}
+# SVM
+set.seed(7)
+fit.svm.pca <- train(LOAN_DEFAULT~., data=dataTrain_pca, method="svmRadial", trControl=control)
+```
+
+
+```{r}
+# kNN
+set.seed(7)
+fit.knn.pca <- train(LOAN_DEFAULT~., data=dataTrain_pca, method="knn", trControl=control)
+```
+
+
+```{r}
+# Random Forest
+set.seed(7)
+fit.rf.pca <- train(LOAN_DEFAULT~., data=dataTrain_pca, method="rf", trControl=control)
+```
+
+```{r}
+# XGBTree
+set.seed(7)
+fit.xgbtree.pca <- train(LOAN_DEFAULT ~., dataTrain_pca, method = "xgbTree", trControl = control)
+```
+
+```{r}
+#install.packages("gmodels")
+library(class)
+#CrossTable(svm_linear,svm_Linear_Grid, kernfit)
+
+# collect resamples
+results.pca <- resamples(list(CART=fit.cart.pca, LDA=fit.lda.pca, SVM=fit.svm.pca, KNN=fit.knn.pca, RF=fit.rf.pca, XGBTree= fit.xgbtree.pca ))
+
+# summarize differences between models
+summary(results.pca)
+```
+Dot plots of accuracy of various algorithm
+```{r}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+dotplot(results.pca, scales=scales)
+```
+Since the financial industry mainly keen on identifying default cases, specifity or true positive rate has to be high. Since the data is slightly higher ratio for non dafault classes, data can be class balanced using one of the balancing methods ROSE or SMOTE. 
+
+The main reason of this experimentation is that supplying more default cases to the model training so that it becomes efficient in recognising positive class. SMOTE balancing technique was used to increase the class ration to almost 50:50.  
+```{r}
+# Loading DMwr to balance the unbalanced class
+library(DMwR)
+
+# Smote : Synthetic Minority Oversampling Technique To Handle Class Imbalancy In Binary Classification
+balanced.data <- SMOTE(LOAN_DEFAULT ~., dataTrain, perc.over = 10, k = 5, perc.under = 1100)
+prop.table(table(balanced.data$LOAN_DEFAULT))
+
+```
+Now an example where we obtain a model using Random Forest with the "balanced" data
+```{r}
+library(randomForest)
+model_rf<-randomForest(LOAN_DEFAULT ~ ., balanced.data)
+```
+
+Applying the model on test dataset
+```{r}
+pred_rf_banlanced <- predict(model_rf, dataTest)
+
+# Performance evaluation using Confusion Matrix
+cm_rf_balanced <- confusionMatrix(pred_rf_banlanced, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_rf_balanced
+```
+
+```{r}
+library(ROCR)
+
+preds <- predict(model_rf, dataTest, type = "prob")
+preds <- prediction(preds[,2], dataTest$LOAN_DEFAULT)
+eval <- performance(preds, "acc")
+plot(eval)
+abline (h=0.82, v= 0.6)
+
+#identify Best Values
+max <- which.max(slot(eval, "y.values")[[1]])
+acc <- slot(eval,"y.values")[[1]][max]
+cut <- slot(eval,"x.values")[[1]][max]
+print(c(Accuracy = acc, Cutoff = cut))
+```
+
+```{r}
+#Receiver Operating Characteristics (ROC) Curve
+Roc <- performance(preds, "tpr", "fpr")
+plot(Roc, colorize= T, main= "ROC Curve")
+abline(a=0, b=1)
+```
+#Model building with Hyperparameter Tuning
+
+The trainControl() method was first implemented. This will control all the computational overheads so that we can use the train() function provided by the caret package. The training method will train our data on different algorithms.
+```{r}
+library(MLmetrics)
+
+#setting trainControl
+trctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 2, summaryFunction=prSummary, classProbs=TRUE)
+```
+trainControl() method returns a list. This is passed on to train() method.
+XGBoost model with grid search and hyperparameter tuning
+```{r}
+library(xgboost)
+xgb_grid <- expand.grid(nrounds = c(2,4,6,8), max_depth = 10, eta=c(0.0001, 0.00001), gamma = 0.5, 
+                         colsample_bytree = 1, min_child_weight = 2, subsample = 0.75)
+model_xgbtree.grid <-  train(LOAN_DEFAULT ~., dataTrain, method= "xgbTree",
+                     trControl=trctrl,
+                     preProcess = c("center", "scale"),
+                     metric = "AUC",
+                     tuneGrid = xgb_grid)
+
+model_xgbtree.grid
+
+# making prediction using this model on test_set
+pred_xgbtree.grid <- predict(model_xgbtree.grid, newdata = dataTest)
+#test_pred_xgbtree
+# Confusion Matrix
+cm_xgbtree.grid <- confusionMatrix(pred_xgbtree.grid,dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+```
+Tuning parameters of RPART
+```{r}
+control <- trainControl(method="repeatedcv", number=5, repeats=2, search="grid", summaryFunction=prSummary, classProbs=TRUE)
+# Setting the tunelength to 15, meaning 15 different main parameter cp will be tried
+model_rpart.grid <- train(LOAN_DEFAULT ~., dataTrain, method="rpart", trControl= control, metric= "AUC", tuneLength=15)
+# Print the model summary 
+model_rpart.grid
+```
+
+
+```{r}
+#Prediction using this model on test dataset
+p4 <- predict(model_rpart.grid, dataTest)
+#Confusion matrix of best model using best parameter cp
+confusionMatrix(p4, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+```
+
+Automatic tuning using tuneLength with grid search.
+```{r}
+# Setting the tunelength to 15, meaning 15 different main parameter MaxDepth will be tried
+model_rpart.grid2 <- train(LOAN_DEFAULT ~., dataTrain, method="rpart2",trControl= control, metric= "AUC",  tuneLength=10)
+# Print the model summary  
+model_rpart.grid2
+```
+
+
+```{r}
+#Prediction using this model on test dataset
+p5 <- predict(model_rpart.grid2, dataTest)
+#Confusion matrix of best model using best parameter MaxDepth
+confusionMatrix(p5, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+contrl <- rpart.control(cp = .000002, 
+                        minsplit=5,
+                        minbucket =5,
+                        maxdepth=10
+                        )
+
+# Setting the tunelength to 15, meaning 15 different main parameter cp will be tried
+model_rpart.grid3 <- rpart(LOAN_DEFAULT ~., dataTrain, method = "class", control=contrl)
+# Print the model summary 
+model_rpart.grid3
+```
+
+Plotting the decision tree model
+```{r}
+rpart.plot(model_rpart.grid3, cex = 0.5, extra = 4)
+plotcp(model_rpart.grid3)
+```
+
+Pruning the decision tree
+```{r}
+rpart.prune <- prune.rpart(model_rpart.grid3, cp=0.00161970 )
+rpart.plot(rpart.prune)
+```
+
+
+```{r}
+#Confusion matrix of best model using best parameter MaxDepth
+p5 <- predict(rpart.prune, dataTest, type = "class")
+confusionMatrix(p5, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+```
+
+s
+```{r}
+svm_Linear <- train(LOAN_DEFAULT ~., dataTrain, method = "svmLinear",
+                    trControl=trctrl,
+                    preProcess = c("center", "scale"),
+                    metric= "AUC",
+                    tuneLength = 10)
+```
+"center" & "scale" transforms the training data with mean value between "-1" to "1". 
+The "tuneLength" parameter holds an integer value.TuneLength 10 means trialing the model 10 different value of main parameters.
+
+Check the results
+```{r}
+svm_Linear
+```
+passing SVM_LINEAR.GRID model to make prediction on test dataset
+```{r}
+pred_svm_linear <- predict(svm_Linear, newdata = dataTest)
+#test_pred
+```
+Evaluating the accuracy using confusion matrix
+```{r}
+cm_svm_linear <- confusionMatrix(pred_svm_linear, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_svm_linear
+```
+The output show the accurary 95.69%
+
+Linear Classifier takes C (cost) value as 1 by default. "GRID" dataframe has been tested with specific C values 
+```{r}
+grid <- expand.grid(C = c( 0.001, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5))
+svm_Linear.Grid <- train(LOAN_DEFAULT ~., dataTrain, method = "svmLinear",
+                         trControl=trctrl,
+                         preProcess = c("center", "scale"),
+                         metric = "AUC",
+                         tuneGrid = grid)
+                         
+svm_Linear.Grid
+plot(svm_Linear.Grid)
+```
+The above plot is showing that this Linear SVM with Grid is giving best accuracy on C = 0.5 to 1.75
+
+Making prediction using this model on test dataset
+```{r}
+pred_Linear.grid <- predict(svm_Linear.Grid, newdata= dataTest)
+#pred_Linear.grid
+```
+ Confusion Matrix SVM linear with grid search model
+```{r}
+cm_linear.grid <- confusionMatrix(pred_Linear.grid, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_linear.grid
+```
+Accuracy with this model is 95.69%
+
+ksvm() function is used for classification and "C-svc" is also used for C classification. "rbfdot" is Radial Basis kernel "Gaussian". 
+```{r}
+library(kernlab)
+xtrain <- subset(dataTrain, select = -c(LOAN_DEFAULT))
+ytrain <- subset(dataTrain, select = c(LOAN_DEFAULT))
+
+xtest <- subset(dataTest, select = -c(LOAN_DEFAULT))
+ytest <- subset(dataTest, select = c(LOAN_DEFAULT))
+
+model_rbfdot <- ksvm(as.matrix(xtrain), ytrain, type = "C-svc", kernel = 'rbfdot', C = 1, scaled = c())
+model_rbfdot
+# Plot training data
+#plot(kernfit, data = training_set[,9])
+```
+Making prediction using this model on test_set
+```{r}
+pred_rbfdot <- predict(model_rbfdot, xtest)
+#test_pred_rbfdot
+# Confusion Matrix using SVM with Radial Basis kernel
+cm_rbfdot <- confusionMatrix (pred_rbfdot, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_rbfdot
+```
+Accuracy for this model is 93.78% which is lower then previous two model svm_linear and svm_linear_grid
+
+SVM with Radial Basis Function Kernel kernal using tarin() function
+```{r}
+grid_sigma <- expand.grid(sigma =c(0.05, 0.1, 0.5, 1), C = c(0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 1))
+model_svm.radial <-  train(LOAN_DEFAULT ~., dataTrain, method= "svmRadialSigma",
+                     trControl=trctrl,
+                     preProcess = c("center", "scale"),
+                     metric= "AUC",
+                     tuneGrid = grid_sigma)
+                     
+model_svm.radial
+```
+Making prediction using this model on test dataset
+```{r}
+pred_radial <- predict(model_svm.radial, dataTest)
+#pred_radial
+# Confusion Matrix for SVM with Hyperbolic tangent Kernal model
+cm_radial <- confusionMatrix(pred_radial, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_radial
+```
+Accuracy with this model is 95.69%
+
+Random Forest model with grid search and hyperparameter tuning
+```{r}
+# Grid Search
+control <- trainControl(method="repeatedcv", number=5, repeats=2, search="grid", summaryFunction=prSummary, classProbs=TRUE)
+tunegrid <- expand.grid(.mtry=c(5,8,10,12,15,18) )
+rf_gridsearch <- train(LOAN_DEFAULT ~ ., dataTrain, method="rf", metric="AUC", tuneGrid=tunegrid, trControl=control, ntree= 1000)
+print(rf_gridsearch)
+plot(rf_gridsearch)
+```
+
+```{r}
+pred_rf.grid <- predict(rf_gridsearch, newdata= dataTest)
+#pred_radial
+# Confusion Matrix for SVM with Hyperbolic tangent Kernal model
+cm_radial <- confusionMatrix(pred_rf.grid, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+cm_radial
+```
+
+```{r}
+# 2 - Tune using algorithm tools
+# Algorithm Tune (tuneRF)
+set.seed(222)
+  
+bestmtry <- tuneRF(dataTrain[,-26], dataTrain[,26], stepFactor=1.5, improve=1e-5, ntree=500)
+print(bestmtry)
+```
+
+```{r}
+# Random Forest
+library(randomForest)
+set.seed(222)
+rf <- randomForest(LOAN_DEFAULT ~., dataTrain,
+                   ntree = 1000,
+                   importance = TRUE,
+                   proximity = TRUE)
+print(rf)
+```
+
+
+```{r}
+# Plot Error rate of Random Forest
+plot(rf)
+legend("topright", colnames(rf$err.rate),col=1:4,cex=0.8,fill=1:4)
+```
+
+
+```{r}
+# Tune mtry
+t <- tuneRF(dataTrain[,-26], dataTrain[,26],stepFactor = 0.5, plot = TRUE, ntreeTry = 300, trace = TRUE, improve = 0.05)
+```
+
+
+```{r}
+# No. of nodes for the trees
+hist(treesize(rf),
+     main = "No. of Nodes for the Trees",
+     col = "green")
+```
+
+
+```{r}
+# Variable Importance
+varImpPlot(rf,
+           sort = T,
+           n.var = 10,
+           main = "Top 10 - Variable Importance")
+```
+
+
+```{r}
+library(randomForest)
+set.seed(222)
+final_model_rf <- randomForest(LOAN_DEFAULT ~., data=dataTrain,
+                   ntree = 400,
+                   mtry = 2,
+                   importance = TRUE,
+                   proximity = TRUE,
+                   lambda= 0.5, alpha=0.5)
+final_model_rf
+```
+
+
+```{r}
+# Prediction & Confusion Matrix - train data
+p1 <- predict(rf_gridsearch, dataTrain)
+confusionMatrix(p1, dataTrain$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+```
+
+
+```{r}
+# Prediction & Confusion Matrix - test data
+p2 <- predict(final_model_rf, dataTest)
+confusionMatrix(p2, dataTest$LOAN_DEFAULT, positive = "X1", dnn= c("Predicted", "Actual"))
+
+```
+
+
+
+```{r}
+# collect resamples
+tune.results <- resamples(list(XGBTree.Grid=model_xgbtree.grid,
+           SVM.Linear = svm_Linear,
+           SVM.Linear_with_grid = svm_Linear.Grid,
+           SVM.radial_with_grid = model_svm.radial,
+           RF.Grid = rf_gridsearch)) 
+
+# summarize differences between models
+summary(tune.results)
+dotplot(tune.results)
+```
+**The End**
